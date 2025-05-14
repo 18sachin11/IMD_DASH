@@ -5,7 +5,6 @@ import zipfile
 import requests
 import xarray as xr
 import rioxarray
-from osgeo import gdal
 import rasterio
 import numpy as np
 import geopandas as gpd
@@ -47,12 +46,8 @@ def nc_to_daily_tifs(input_folder, output_folder):
             arr = da.sel({time_var: t})
             arr.rio.write_crs('EPSG:4326', inplace=True)
             day_str = str(t.values).split('T')[0]
-            raw = os.path.join(output_folder, f"imd_pcp_{day_str}_raw.tif")
-            final = os.path.join(output_folder, f"imd_pcp_{day_str}.tif")
-            arr.rio.to_raster(raw)
-            gdal.Warp(destNameOrDestDS=final, srcDSOrSrcDSTab=raw,
-                      dstSRS='EPSG:4326', resampleAlg='bilinear', format='GTiff')
-            os.remove(raw)
+            out_tif = os.path.join(output_folder, f"imd_pcp_{day_str}.tif")
+            arr.rio.to_raster(out_tif, driver='GTiff')
     return output_folder
 
 
@@ -133,7 +128,7 @@ def clip_and_export(raster_folder, shapefile_path, out_tif_folder, out_csv_path)
             rows, cols = np.where(data != src.nodata)
             xs, ys = rasterio.transform.xy(out_transform, rows, cols)
             for x, y, v in zip(xs, ys, data[rows, cols]):
-                records.append({ 'x': x, 'y': y, 'value': float(v), 'file': tif })
+                records.append({'x': x, 'y': y, 'value': float(v), 'file': tif})
     pd.DataFrame(records).to_csv(out_csv_path, index=False)
     return out_tif_folder, out_csv_path
 
@@ -155,18 +150,16 @@ def main():
         if shapefile is None:
             st.error("Please upload a valid shapefile boundary before proceeding.")
             return
-        # Save shapefile to temp
         with tempfile.TemporaryDirectory() as tmp:
             if shapefile.type == "application/zip":
                 zf = zipfile.ZipFile(shapefile)
                 zf.extractall(tmp)
                 shp_file = next((os.path.join(tmp, f) for f in os.listdir(tmp) if f.endswith('.shp')), None)
             else:
-                shp_ext = os.path.splitext(shapefile.name)[1]
-                shp_file = os.path.join(tmp, f"boundary{shp_ext}")
+                ext = os.path.splitext(shapefile.name)[1]
+                shp_file = os.path.join(tmp, f"boundary{ext}")
                 with open(shp_file, 'wb') as f:
                     f.write(shapefile.getbuffer())
-
             if not shp_file or not os.path.exists(shp_file):
                 st.error("No .shp file found in the uploaded archive.")
                 return
@@ -190,7 +183,6 @@ def main():
                     file_name="clipped_data.csv",
                     mime="text/csv"
                 )
-            # Zip the clipped TIFFs
             zip_path = os.path.join(os.getcwd(), "clipped_tifs.zip")
             with zipfile.ZipFile(zip_path, 'w') as zipf:
                 for root, _, files in os.walk(tif_out):
