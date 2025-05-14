@@ -13,12 +13,15 @@ import pandas as pd
 from rasterio.mask import mask
 
 # ---------------------------
-# Helper functions
+# Helper functions with progress bars
 # ---------------------------
 def download_imd_nc(start_year, end_year, download_folder):
     os.makedirs(download_folder, exist_ok=True)
     url = "https://www.imdpune.gov.in/cmpg/Griddata/RF25.php"
-    for year in range(start_year, end_year + 1):
+    years = list(range(start_year, end_year + 1))
+    total = len(years)
+    pbar = st.progress(0)
+    for idx, year in enumerate(years):
         payload = {"RF25": str(year)}
         resp = requests.post(url, data=payload, stream=True)
         resp.raise_for_status()
@@ -27,13 +30,16 @@ def download_imd_nc(start_year, end_year, download_folder):
             for chunk in resp.iter_content(chunk_size=8192):
                 if chunk:
                     f.write(chunk)
+        pbar.progress(int((idx + 1) / total * 100))
     return download_folder
 
 
 def nc_to_daily_tifs(input_folder, output_folder):
     os.makedirs(output_folder, exist_ok=True)
-    for fname in os.listdir(input_folder):
-        if not fname.endswith('.nc'): continue
+    nc_files = [f for f in os.listdir(input_folder) if f.endswith('.nc')]
+    total = len(nc_files)
+    pbar = st.progress(0)
+    for idx, fname in enumerate(nc_files):
         year = int(fname.split('_')[-1].split('.')[0])
         path = os.path.join(input_folder, fname)
         ds = xr.open_dataset(path)
@@ -48,16 +54,22 @@ def nc_to_daily_tifs(input_folder, output_folder):
             day_str = str(t.values).split('T')[0]
             out_tif = os.path.join(output_folder, f"imd_pcp_{day_str}.tif")
             arr.rio.to_raster(out_tif, driver='GTiff')
+        pbar.progress(int((idx + 1) / total * 100))
     return output_folder
 
 
 def daily_to_monthly(input_folder, output_folder):
     os.makedirs(output_folder, exist_ok=True)
-    for year_month in sorted({f[8:15] for f in os.listdir(input_folder) if f.endswith('.tif')}):
+    periods = sorted({f[8:15] for f in os.listdir(input_folder) if f.endswith('.tif')})
+    total = len(periods)
+    pbar = st.progress(0)
+    for idx, year_month in enumerate(periods):
         parts = year_month.split('-')
         year, month = int(parts[0]), int(parts[1])
-        files = [os.path.join(input_folder, f) for f in os.listdir(input_folder) if f[8:15]==year_month]
-        if not files: continue
+        files = [os.path.join(input_folder, f) for f in os.listdir(input_folder) if f[8:15] == year_month]
+        if not files:
+            pbar.progress(int((idx + 1) / total * 100))
+            continue
         arrays, meta, nodata = [], None, None
         for f in files:
             with rasterio.open(f) as src:
@@ -65,7 +77,7 @@ def daily_to_monthly(input_folder, output_folder):
                 if meta is None:
                     meta, nodata = src.meta.copy(), src.nodata or -9999
                     meta.update(nodata=nodata)
-                d[d==nodata] = np.nan
+                d[d == nodata] = np.nan
                 arrays.append(d)
         stack = np.stack(arrays)
         msum = np.nansum(stack, axis=0)
@@ -74,16 +86,19 @@ def daily_to_monthly(input_folder, output_folder):
         meta.update(dtype=rasterio.float32, count=1)
         with rasterio.open(out, 'w', **meta) as dst:
             dst.write(msum, 1)
+        pbar.progress(int((idx + 1) / total * 100))
     return output_folder
 
 
 def monthly_to_annual(input_folder, output_folder):
     os.makedirs(output_folder, exist_ok=True)
     years = sorted({int(f.split('_')[3]) for f in os.listdir(input_folder)})
-    for year in years:
+    total = len(years)
+    pbar = st.progress(0)
+    for idx, year in enumerate(years):
         files = []
-        for m in list(range(6,13)) + list(range(1,6)):
-            y = year if m>=6 else year+1
+        for m in list(range(6, 13)) + list(range(1, 6)):
+            y = year if m >= 6 else year + 1
             p = os.path.join(input_folder, f"imd_pcp_m_{y}_{m:02d}.tif")
             if os.path.exists(p): files.append(p)
         arrays, meta, nodata = [], None, None
@@ -93,7 +108,7 @@ def monthly_to_annual(input_folder, output_folder):
                 if meta is None:
                     meta, nodata = src.meta.copy(), src.nodata or -9999
                     meta.update(nodata=nodata)
-                d[d==nodata] = np.nan
+                d[d == nodata] = np.nan
                 arrays.append(d)
         stack = np.stack(arrays)
         asum = np.nansum(stack, axis=0)
@@ -102,6 +117,7 @@ def monthly_to_annual(input_folder, output_folder):
         meta.update(dtype=rasterio.float32, count=1)
         with rasterio.open(out, 'w', **meta) as dst:
             dst.write(asum, 1)
+        pbar.progress(int((idx + 1) / total * 100))
     return output_folder
 
 
@@ -109,9 +125,11 @@ def clip_and_export(raster_folder, shapefile_path, out_tif_folder, out_csv_path)
     os.makedirs(out_tif_folder, exist_ok=True)
     gdf = gpd.read_file(shapefile_path)
     geoms = [mapping(geom) for geom in gdf.geometry]
+    tifs = sorted([f for f in os.listdir(raster_folder) if f.endswith('.tif')])
+    total = len(tifs)
+    pbar = st.progress(0)
     records = []
-    for tif in sorted(os.listdir(raster_folder)):
-        if not tif.endswith('.tif'): continue
+    for idx, tif in enumerate(tifs):
         src_path = os.path.join(raster_folder, tif)
         with rasterio.open(src_path) as src:
             out_img, out_transform = mask(src, geoms, crop=True)
@@ -129,8 +147,10 @@ def clip_and_export(raster_folder, shapefile_path, out_tif_folder, out_csv_path)
             xs, ys = rasterio.transform.xy(out_transform, rows, cols)
             for x, y, v in zip(xs, ys, data[rows, cols]):
                 records.append({'x': x, 'y': y, 'value': float(v), 'file': tif})
+        pbar.progress(int((idx + 1) / total * 100))
     pd.DataFrame(records).to_csv(out_csv_path, index=False)
     return out_tif_folder, out_csv_path
+
 
 # ---------------------------
 # Streamlit App
