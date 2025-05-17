@@ -511,7 +511,7 @@ else:
                 st.session_state.downloaded_files = []
                 st.info(f"Downloading data for years {start_yr} to {end_yr}")
                 for year in range(start_yr, end_yr + 1):
-                    if year < 2000 or year > 2024:
+                    if year < 1900 or year > 2024:
                         st.warning(f"Year {year} is outside valid range (2000-2024). Skipping.")
                         continue
                     file_path = download_netcdf(year)
